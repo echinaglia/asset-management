@@ -1,0 +1,184 @@
+version: 2.1
+defaults: &defaults
+  docker:
+    - image: circleci/python:3.8
+
+  working_directory: ~/repo
+
+  steps:
+    - checkout
+    - setup_remote_docker
+
+    - run:
+        name: clone infrastructure repo
+        command: git clone -b master git@github.com:Adianta/infrastructure.git && mkdir panco && mv infrastructure/panco/* ./panco/
+
+    - run:
+        name: create infrastructure venv
+        command: python -m venv env && source ./env/bin/activate && pip install -e ./panco/
+
+    - run:
+        name: Avoid hosts unknown for github
+        command: echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+
+    - add_ssh_keys:
+        fingerprints:
+          - "cf:2c:a0:0f:e5:17:f3:49:55:25:c8:6c:96:49:ac:8e"
+
+    - run:
+        name: Copy SSH keys
+        command: cp ~/.ssh/id_rsa id_rsa
+
+    - run:
+        name: Install AWSCLI
+        working_directory: /
+        command: |
+          pip install --user awscli==1.15.57
+
+    - run:
+        name: login to aws ecr
+        command: eval $(aws ecr get-login --region us-west-2 --no-include-email)
+
+    - run:
+        name: Build Docker Image
+        command: docker build -t loan-service .
+
+    - run:
+        name: tag image as latest
+        command: docker tag loan-service:latest 319277284191.dkr.ecr.us-west-2.amazonaws.com/loan-service:<< pipeline.git.branch >>
+
+    - run:
+        name: push image to ecr
+        command: docker push 319277284191.dkr.ecr.us-west-2.amazonaws.com/loan-service:<< pipeline.git.branch >>
+
+    - run:
+        name: deploy service
+        command: source ./env/bin/activate && panco create-service loan_service << pipeline.git.branch >>
+
+jobs:
+  run-tests:
+    docker:
+      - image: circleci/python:3.8
+
+      - image: circleci/mongo
+        environment:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: 123456
+          MONGO_INITDB_DATABASE: loan_service
+
+    working_directory: ~/repo
+
+    steps:
+      - checkout
+
+      - run:
+          name: Avoid hosts unknown for github
+          command: echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+
+      - add_ssh_keys:
+          fingerprints:
+            - "cf:2c:a0:0f:e5:17:f3:49:55:25:c8:6c:96:49:ac:8e"
+
+      - run:
+          name: Copy SSH keys
+          command: cp ~/.ssh/id_rsa id_rsa
+
+      - run:
+          name: install python dependencies
+          command: |
+            python -m virtualenv venv
+            . venv/bin/activate
+            pip install -r requirements/testing.txt -r requirements/requirements.txt --no-cache-dir
+            pytest --cov=repo/ --cov-report=html --junitxml=htmlcov/results.xml tests/
+
+      - store_test_results:
+          path: htmlcov
+      - store_artifacts:
+          path: htmlcov
+
+  deploy-develop-job:
+    <<: *defaults
+
+  deploy-staging-job:
+    <<: *defaults
+
+  deploy-production-job:
+    docker:
+      - image: circleci/python:3.8
+
+    working_directory: ~/repo
+
+    steps:
+      - checkout
+      - setup_remote_docker
+
+      - run:
+          name: clone infrastructure repo
+          command: git clone -b master git@github.com:Adianta/infrastructure.git && mkdir panco && mv infrastructure/panco/* ./panco/
+
+      - run:
+          name: create infrastructure venv
+          command: python -m venv env && source ./env/bin/activate && pip install -e ./panco/
+
+      - run:
+          name: Avoid hosts unknown for github
+          command: echo -e "Host github.com\n\tStrictHostKeyChecking no\n" > ~/.ssh/config
+
+      - add_ssh_keys:
+          fingerprints:
+            - "cf:2c:a0:0f:e5:17:f3:49:55:25:c8:6c:96:49:ac:8e"
+
+      - run:
+          name: Copy SSH keys
+          command: cp ~/.ssh/id_rsa id_rsa
+
+      - run:
+          name: Install AWSCLI
+          working_directory: /
+          command: |
+            pip install --user awscli==1.15.57
+
+      - run:
+          name: login to aws ecr
+          command: eval $(aws ecr get-login --region us-west-2 --no-include-email)
+
+      - run:
+          name: Build Docker Image
+          command: docker build -t loan-service .
+
+      - run:
+          name: tag image as latest
+          command: docker tag loan-service:latest 319277284191.dkr.ecr.us-west-2.amazonaws.com/loan-service:prod
+
+      - run:
+          name: push image to ecr
+          command: docker push 319277284191.dkr.ecr.us-west-2.amazonaws.com/loan-service:prod
+
+      - run:
+          name: deploy service
+          command: source ./env/bin/activate && panco create-service loan_service prod
+
+
+workflows:
+  version: 2
+  build-deploy:
+    jobs:
+      - run-tests
+      - deploy-develop-job:
+          requires:
+            - run-tests
+          filters:
+            branches:
+              only: develop
+      - deploy-staging-job:
+          requires:
+            - run-tests
+          filters:
+            branches:
+              only: staging
+      - deploy-production-job:
+          requires:
+            - run-tests
+          filters:
+            branches:
+              only: master

@@ -2,7 +2,7 @@ import pytest
 from pymongo import MongoClient
 import os
 
-from run import make_app
+from api.run import make_app
 
 
 @pytest.fixture(autouse=True, scope="session")

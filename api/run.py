@@ -1,12 +1,12 @@
 import os
 
-import os
-
-from flask import Flask, jsonify
+from flask import Flask, g, jsonify
 from flask_cors import CORS
 from werkzeug.exceptions import InternalServerError, NotFound
+from stock_models.utils.io_utils import set_session, commit_session
 
 
+from app.views.private.api import private_bp
 from app.views.public.api import public_bp
 
 
@@ -21,6 +21,8 @@ def make_app():
     CORS(application)
 
     application.register_blueprint(public_bp)
+    application.register_blueprint(private_bp)
+    database(application)
 
     @application.before_request
     def log_requests():
@@ -38,8 +40,17 @@ def make_app():
     return application
 
 
-app = make_app()
+def database(application):
+    set_session(application.config['SQLALCHEMY_DATABASE_URI'])
+
+    @application.teardown_appcontext
+    def finish_session(exception=None):
+        commit_session(exception)
+        if hasattr(g, "tasks"):
+            for task in g.tasks:
+                task.delay()
 
 
 if __name__ == "__main__":
-    app.run()
+    app = make_app()
+    app.run(debug=True)
